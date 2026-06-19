@@ -6,7 +6,7 @@
 #   reminder_engine — Python scheduler built from the local Dockerfile
 #
 # Usage:
-#   cp .env.example .env          # populate secrets before first run
+#   touch .env                    # create and populate secrets before first run
 #   docker compose up -d          # start in detached mode
 #   docker compose logs -f        # stream logs from both services
 #   docker compose down -v        # stop and remove containers + volumes
