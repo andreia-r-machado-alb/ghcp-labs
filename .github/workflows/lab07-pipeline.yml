@@ -87,7 +87,7 @@ jobs:
 
       - name: Install Terraform
         if: ${{ hashFiles('lab07/main.tf') != '' }}
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
 
       - name: Validate Bicep (if present)
         if: ${{ hashFiles('lab07/main.bicep') != '' }}
