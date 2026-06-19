@@ -1,0 +1,168 @@
+# =============================================================================
+# Reminder Engine — Production Docker Compose
+# =============================================================================
+# Services:
+#   db              — PostgreSQL 16 database with persistent storage
+#   reminder_engine — Python scheduler built from the local Dockerfile
+#
+# Usage:
+#   cp .env.example .env          # populate secrets before first run
+#   docker compose up -d          # start in detached mode
+#   docker compose logs -f        # stream logs from both services
+#   docker compose down -v        # stop and remove containers + volumes
+#
+# Required environment variables (set in a .env file or the host environment):
+#   POSTGRES_PASSWORD             — database superuser password (REQUIRED)
+#
+# Optional (defaults are shown below in each service):
+#   POSTGRES_DB, POSTGRES_USER, LOG_LEVEL,
+#   REMINDER_THRESHOLD_HOURS, REMINDER_COOLDOWN_HOURS
+# =============================================================================
+
+# Compose Specification (Docker Compose v2+) — no version key required.
+
+# =============================================================================
+# Services
+# =============================================================================
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL database
+  # Stores approval records, reminder history, and scheduler run results.
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine          # pinned major version; alpine for minimal attack surface
+    container_name: reminder_db
+    restart: unless-stopped            # auto-restart on crash; respect manual `docker stop`
+
+    environment:
+      # Database name — defaults to "reminders" if not overridden in .env
+      POSTGRES_DB: ${POSTGRES_DB:-reminders}
+      # Application user — least-privilege account used by reminder_engine
+      POSTGRES_USER: ${POSTGRES_USER:-reminder_user}
+      # Password is REQUIRED; compose fails at startup if unset (fail-fast behaviour)
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+
+    volumes:
+      # Named volume — data survives container replacement and upgrades
+      - postgres_data:/var/lib/postgresql/data
+
+    networks:
+      - backend                        # internal-only network; db is not reachable from outside
+
+    # Health check — pg_isready is lightweight and reflects the actual DB state.
+    # start_period gives PostgreSQL time to initialise on first run.
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "pg_isready -U ${POSTGRES_USER:-reminder_user} -d ${POSTGRES_DB:-reminders}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    # Resource limits — prevent a runaway query or leak from exhausting the host
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+  # ---------------------------------------------------------------------------
+  # Reminder Engine (Python scheduler)
+  # Built from the local Dockerfile using a multi-stage build; runs as a
+  # non-root user and starts only after the database is confirmed healthy.
+  # ---------------------------------------------------------------------------
+  reminder_engine:
+    build:
+      context: .                       # build context is this lab06/ directory
+      dockerfile: Dockerfile
+      target: production               # use the final stage only (excludes build tools)
+
+    container_name: reminder_engine
+    restart: unless-stopped
+
+    environment:
+      # ── Database connection ────────────────────────────────────────────────
+      # Full DSN — convenience for libraries that accept a single URL
+      DATABASE_URL: >-
+        postgresql://${POSTGRES_USER:-reminder_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-reminders}
+      # Individual parameters — for libraries that use separate host/port/name
+      DB_HOST: db                      # service name resolves via Docker DNS on reminder_net
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-reminders}
+      DB_USER: ${POSTGRES_USER:-reminder_user}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+
+      # ── Application tuning ────────────────────────────────────────────────
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      REMINDER_THRESHOLD_HOURS: ${REMINDER_THRESHOLD_HOURS:-48}
+      REMINDER_COOLDOWN_HOURS: ${REMINDER_COOLDOWN_HOURS:-24}
+
+    depends_on:
+      db:
+        condition: service_healthy     # blocks start until pg_isready succeeds
+
+    networks:
+      - backend                        # reaches db on the internal network
+      - frontend                       # reaches the internet for outbound email/webhooks
+
+    # Drop all Linux capabilities not required by the scheduler (principle of least privilege).
+    cap_drop:
+      - ALL
+
+    # Prevent the process from gaining new privileges via setuid/setgid binaries.
+    security_opt:
+      - no-new-privileges:true
+
+    # Structured log output with rotation — prevents unbounded disk growth in production.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Health check — verifies the Python runtime and module are importable.
+    # A production variant could hit an internal HTTP /health endpoint instead.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import reminder_engine"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Resource limits — prevents memory leaks from accumulating unchecked
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  # Named volume managed by Docker — persists across container restarts/upgrades.
+  # To reset the database completely: docker compose down -v
+  postgres_data:
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  # Internal network — db and reminder_engine communicate here via Docker DNS.
+  # internal: true enforces that no container on this network can reach the internet.
+  backend:
+    driver: bridge
+    internal: true
+
+  # External network — reminder_engine only; allows outbound calls (email, webhooks).
+  # db is NOT attached here, so it is truly unreachable from outside the stack.
+  frontend:
+    driver: bridge
