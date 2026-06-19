@@ -22,6 +22,7 @@ variable "application_name" {
 
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]{1,12}$", var.application_name))
+    error_message = "application_name must be 2-13 lowercase alphanumeric characters or hyphens, starting with a letter."
   }
 }
 
