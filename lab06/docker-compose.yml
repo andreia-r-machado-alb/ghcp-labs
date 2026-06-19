@@ -61,7 +61,7 @@ services:
       retries: 5
       start_period: 30s
 
-    # Resource limits — prevent a runaway query or leak from exhausting the host
+    # Resource limits — NOTE: deploy.resources is only enforced in Swarm mode; for local `docker compose` you need `--compatibility` or alternative limit settings.
     deploy:
       resources:
         limits:
@@ -134,7 +134,7 @@ services:
       retries: 3
       start_period: 10s
 
-    # Resource limits — prevents memory leaks from accumulating unchecked
+    # Resource limits — NOTE: deploy.resources is only enforced in Swarm mode; for local `docker compose` you need `--compatibility` or alternative limit settings.
     deploy:
       resources:
         limits:
