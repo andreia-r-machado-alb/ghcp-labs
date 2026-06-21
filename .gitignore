@@ -12,6 +12,7 @@ build/
 .venv/
 venv/
 env/
+.env*
 
 # Lab generated outputs (participants generate these themselves)
 lab06/evidence/

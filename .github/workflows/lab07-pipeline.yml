@@ -1,0 +1,140 @@
+name: Lab07 Supply-Chain CI/CD
+
+on:
+  push:
+    branches:
+      - lab07/pr-workflow
+  pull_request:
+    branches:
+      - main
+
+permissions: {}  # deny all at workflow level; each job grants only what it needs
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Install lab07 dependencies
+        run: pip install -r lab07/requirements.txt
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          pip install cyclonedx-bom
+          python -m cyclonedx_py requirements lab07/requirements.txt > lab07/sbom.xml
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: sbom
+          path: lab07/sbom.xml
+
+  scan:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Download SBOM artifact
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: sbom
+          path: lab07
+
+      - name: Run pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit -r lab07/requirements.txt --format=json -o lab07/cve-report.json
+
+      - name: Upload CVE report artifact
+        if: failure()
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: cve-report
+          path: lab07/cve-report.json
+
+      - name: Surface vulnerability failures
+        if: failure()
+        run: |
+          echo "::error::pip-audit found vulnerabilities. Download the 'cve-report' artifact for details."
+          exit 1
+
+  validate-iac:
+    runs-on: ubuntu-latest
+    needs: scan
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Terraform
+        if: ${{ hashFiles('lab07/main.tf') != '' }}
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+
+      - name: Validate Bicep (if present)
+        if: ${{ hashFiles('lab07/main.bicep') != '' }}
+        run: |
+          az bicep install
+          az bicep build --file lab07/main.bicep
+
+      - name: Validate Terraform (if present)
+        if: ${{ hashFiles('lab07/main.tf') != '' }}
+        run: |
+          cd lab07
+          terraform init -backend=false
+          terraform validate
+
+      - name: Surface IaC validation failures
+        if: failure()
+        run: |
+          echo "::error::IaC validation failed. Check Bicep or Terraform step output above."
+          exit 1
+
+  manual-approval:
+    runs-on: ubuntu-latest
+    needs: validate-iac
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Await manual approval
+        run: echo 'All gates passed. Pending approval.'
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: manual-approval
+    permissions:
+      contents: read
+      id-token: write  # required for OIDC token exchange
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      #- name: Azure login (OIDC)
+      #  uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+      #  with:
+      #    client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      #    tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      #    subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Dry-run deployment
+        run: |
+          echo 'Would run: az deployment group create --what-if / terraform plan'
